@@ -4,6 +4,8 @@ Extracts embedded OLE objects (ppt/pptx) from PowerPoint files recursively
 """
 import os
 import tempfile
+import zipfile
+import shutil
 from pathlib import Path
 from typing import List, Dict, Tuple
 from pptx import Presentation
@@ -175,9 +177,9 @@ class PPTXExtractor:
         return saved_files
 
 
-def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
+def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Path]:
     """
-    Convenience function to extract all embedded PowerPoint files
+    Extract embedded files directly from PPTX ZIP structure
 
     Args:
         pptx_path: Path to the source PowerPoint file
@@ -186,6 +188,108 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
     Returns:
         List of paths to extracted PowerPoint files
     """
+    pptx_path = Path(pptx_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    extracted_files = []
+
+    try:
+        with zipfile.ZipFile(pptx_path, 'r') as zip_ref:
+            # Look for embedded files in ppt/embeddings/ directory
+            embedded_files = [f for f in zip_ref.namelist() if f.startswith('ppt/embeddings/')]
+
+            logger.info(f"Found {len(embedded_files)} files in ppt/embeddings/")
+
+            for idx, file_path in enumerate(embedded_files, 1):
+                try:
+                    # Extract the file
+                    file_data = zip_ref.read(file_path)
+
+                    # Determine file extension by checking file signature
+                    ext = _detect_file_extension(file_data)
+
+                    # Skip if not a PowerPoint file
+                    if ext not in ['.ppt', '.pptx', '.pptm']:
+                        logger.debug(f"Skipping non-PowerPoint file: {file_path} (detected: {ext})")
+                        continue
+
+                    # Generate output filename
+                    output_filename = f"embedded_{idx}{ext}"
+                    output_path = output_dir / output_filename
+
+                    # Save the file
+                    with open(output_path, 'wb') as f:
+                        f.write(file_data)
+
+                    extracted_files.append(output_path)
+                    logger.info(f"Extracted embedded file: {output_filename}")
+
+                except Exception as e:
+                    logger.error(f"Error extracting {file_path}: {e}")
+
+    except zipfile.BadZipFile:
+        logger.error(f"Invalid PPTX file (not a valid ZIP): {pptx_path}")
+    except Exception as e:
+        logger.error(f"Error reading PPTX as ZIP: {e}")
+
+    return extracted_files
+
+
+def _detect_file_extension(file_data: bytes) -> str:
+    """
+    Detect file extension from file signature (magic bytes)
+
+    Args:
+        file_data: Binary file data
+
+    Returns:
+        File extension
+    """
+    if len(file_data) < 8:
+        return '.bin'
+
+    # Check for ZIP-based formats (PPTX, DOCX, etc.)
+    if file_data[:4] == b'PK\x03\x04':
+        # Further check for PPTX by looking for specific content
+        if b'ppt/' in file_data[:1000] or b'[Content_Types].xml' in file_data[:2000]:
+            return '.pptx'
+        elif b'word/' in file_data[:1000]:
+            return '.docx'
+        elif b'xl/' in file_data[:1000]:
+            return '.xlsx'
+        return '.zip'
+
+    # Check for old Office format (OLE2)
+    if file_data[:8] == b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1':
+        # This is an OLE2 file, likely .ppt or .doc
+        # Default to .ppt for PowerPoint context
+        return '.ppt'
+
+    return '.bin'
+
+
+def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
+    """
+    Convenience function to extract all embedded PowerPoint files
+    Uses both ZIP extraction and OLE object parsing
+
+    Args:
+        pptx_path: Path to the source PowerPoint file
+        output_dir: Directory to save extracted files
+
+    Returns:
+        List of paths to extracted PowerPoint files
+    """
+    # Try ZIP extraction first (more reliable for embedded files)
+    extracted_files = extract_embedded_pptx_from_zip(pptx_path, output_dir)
+
+    if extracted_files:
+        logger.info(f"Successfully extracted {len(extracted_files)} embedded PowerPoint files using ZIP method")
+        return extracted_files
+
+    # Fallback to OLE object extraction
+    logger.info("No files found with ZIP method, trying OLE extraction...")
     extractor = PPTXExtractor(pptx_path)
     extractor.load_presentation()
     ole_objects = extractor.extract_ole_objects()
