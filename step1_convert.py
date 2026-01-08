@@ -102,7 +102,8 @@ class Step1Converter:
         self,
         pptx_path: Path,
         parent_file: str = None,
-        depth: int = 0
+        depth: int = 0,
+        source_location: Dict = None
     ) -> None:
         """
         Recursively convert PowerPoint files to images
@@ -111,6 +112,7 @@ class Step1Converter:
             pptx_path: Path to PowerPoint file
             parent_file: Name of parent file
             depth: Current recursion depth
+            source_location: Metadata about where this file was embedded (slide, position, etc.)
         """
         pptx_path = Path(pptx_path)
         file_key = f"{pptx_path.stem}_d{depth}"
@@ -171,25 +173,45 @@ class Step1Converter:
                 "images_dir": str(slide_images_dir)
             }
 
+            # Add source location if this is an embedded file
+            if source_location:
+                self.file_hierarchy[file_key]["source_location"] = source_location
+
             logger.info(f"{indent}Converted {len(slide_images)} slides")
 
             # Extract embedded OLE objects
             logger.info(f"{indent}Checking for embedded files...")
             ole_dir = self.temp_dir / f"{file_key}_embedded"
-            embedded_pptx_files = extract_embedded_pptx(pptx_path, ole_dir)
+            embedded_pptx_files, embedded_metadata = extract_embedded_pptx(pptx_path, ole_dir)
 
             if embedded_pptx_files:
                 logger.info(f"{indent}Found {len(embedded_pptx_files)} embedded PowerPoint files")
-                self.file_hierarchy[file_key]["embedded_files"] = [
-                    f.name for f in embedded_pptx_files
-                ]
+
+                # Store embedded file info with metadata
+                embedded_info = []
+                for embedded_file in embedded_pptx_files:
+                    file_info = {
+                        "filename": embedded_file.name,
+                        "path": str(embedded_file)
+                    }
+
+                    # Add location metadata if available
+                    if embedded_file.name in embedded_metadata:
+                        file_info["source_location"] = embedded_metadata[embedded_file.name]
+
+                    embedded_info.append(file_info)
+
+                self.file_hierarchy[file_key]["embedded_files"] = embedded_info
 
                 # Recursively process embedded files
                 for embedded_file in embedded_pptx_files:
+                    # Pass metadata to child
+                    child_metadata = embedded_metadata.get(embedded_file.name, {})
                     self._recursive_convert(
                         embedded_file,
                         parent_file=pptx_path.name,
-                        depth=depth + 1
+                        depth=depth + 1,
+                        source_location=child_metadata
                     )
             else:
                 logger.info(f"{indent}No embedded files found")

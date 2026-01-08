@@ -217,6 +217,10 @@ class Step2Analyzer:
             "slides": slide_results
         }
 
+        # Add source location metadata if this is an embedded file
+        if "source_location" in file_info:
+            result["file_info"]["source_location"] = file_info["source_location"]
+
         # Find embedded files (children of this file)
         embedded_results = []
         for child_key, child_info in self.file_hierarchy.items():

@@ -195,22 +195,26 @@ class PPTXExtractor:
         return saved_files
 
 
-def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Path]:
+def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> Tuple[List[Path], Dict[str, Dict]]:
     """
-    Extract embedded files directly from PPTX ZIP structure
+    Extract embedded files directly from PPTX ZIP structure with metadata
 
     Args:
         pptx_path: Path to the source PowerPoint file
         output_dir: Directory to save extracted files
 
     Returns:
-        List of paths to extracted PowerPoint files
+        Tuple of (list of extracted file paths, metadata dictionary)
     """
     pptx_path = Path(pptx_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     extracted_files = []
+    metadata = {}
+
+    # First, get location info from python-pptx
+    location_info = _get_embedded_locations(pptx_path)
 
     try:
         with zipfile.ZipFile(pptx_path, 'r') as zip_ref:
@@ -248,7 +252,14 @@ def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Pa
                         continue
 
                     extracted_files.append(output_path)
-                    logger.info(f"Extracted embedded file: {output_filename}")
+
+                    # Get location info from the mapping
+                    embedding_name = Path(file_path).name
+                    if embedding_name in location_info:
+                        metadata[output_path.name] = location_info[embedding_name]
+                        logger.info(f"Extracted embedded file: {output_filename} (from slide {location_info[embedding_name].get('slide_number', '?')})")
+                    else:
+                        logger.info(f"Extracted embedded file: {output_filename}")
 
                 except Exception as e:
                     logger.error(f"Error extracting {file_path}: {e}")
@@ -258,7 +269,63 @@ def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Pa
     except Exception as e:
         logger.error(f"Error reading PPTX as ZIP: {e}")
 
-    return extracted_files
+    return extracted_files, metadata
+
+
+def _get_embedded_locations(pptx_path: Path) -> Dict[str, Dict]:
+    """
+    Get location metadata for all embedded objects in a presentation
+
+    Args:
+        pptx_path: Path to the PowerPoint file
+
+    Returns:
+        Dictionary mapping embedding filename to location metadata
+    """
+    location_info = {}
+
+    try:
+        presentation = Presentation(str(pptx_path))
+
+        for slide_idx, slide in enumerate(presentation.slides, 1):
+            for shape_idx, shape in enumerate(slide.shapes, 1):
+                try:
+                    # Check if shape has an embedded object
+                    if hasattr(shape, '_element'):
+                        # Look for oleObject or embed in the shape
+                        for rel in shape.part.rels.values():
+                            if 'oleObject' in rel.reltype or 'package' in rel.reltype:
+                                # Get the embedding reference
+                                target = rel.target_ref
+                                embedding_name = Path(target).name if target else None
+
+                                if embedding_name:
+                                    # Get position and size
+                                    location_info[embedding_name] = {
+                                        'slide_number': slide_idx,
+                                        'shape_index': shape_idx,
+                                        'position': {
+                                            'left': shape.left,
+                                            'top': shape.top
+                                        },
+                                        'size': {
+                                            'width': shape.width,
+                                            'height': shape.height
+                                        }
+                                    }
+
+                                    # Try to get shape name if available
+                                    if hasattr(shape, 'name'):
+                                        location_info[embedding_name]['shape_name'] = shape.name
+
+                except Exception as e:
+                    logger.debug(f"Could not get location for shape in slide {slide_idx}: {e}")
+                    continue
+
+    except Exception as e:
+        logger.warning(f"Could not extract location metadata: {e}")
+
+    return location_info
 
 
 def _validate_extracted_file(file_path: Path) -> bool:
@@ -346,9 +413,9 @@ def _detect_file_extension(file_data: bytes) -> str:
     return '.bin'
 
 
-def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Path]:
+def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> Tuple[List[Path], Dict[str, Dict]]:
     """
-    Extract embedded PowerPoint files using COM automation
+    Extract embedded PowerPoint files using COM automation with metadata
     Works even for corrupted/non-standard PPTX files that PowerPoint can open
 
     Args:
@@ -356,17 +423,18 @@ def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Pat
         output_dir: Directory to save extracted files
 
     Returns:
-        List of paths to extracted PowerPoint files
+        Tuple of (list of extracted file paths, metadata dictionary)
     """
     if not COM_AVAILABLE:
         logger.debug("COM not available, skipping COM extraction")
-        return []
+        return [], {}
 
     pptx_path = Path(pptx_path).resolve()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     extracted_files = []
+    metadata = {}
 
     try:
         pythoncom.CoInitialize()
@@ -411,6 +479,26 @@ def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Pat
                                     temp_filename = f"embedded_s{slide_idx}_sh{shape_idx}.pptx"
                                     temp_path = output_dir / temp_filename
 
+                                    # Collect metadata
+                                    file_metadata = {
+                                        'slide_number': slide_idx,
+                                        'shape_index': shape_idx,
+                                        'position': {
+                                            'left': shape.Left,
+                                            'top': shape.Top
+                                        },
+                                        'size': {
+                                            'width': shape.Width,
+                                            'height': shape.Height
+                                        }
+                                    }
+
+                                    # Try to get shape name
+                                    try:
+                                        file_metadata['shape_name'] = shape.Name
+                                    except:
+                                        pass
+
                                     # Try to activate and save the embedded object
                                     try:
                                         ole_format.DoVerb(1)  # Open for editing
@@ -420,6 +508,7 @@ def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Pat
                                         embedded_pres.Close()
 
                                         extracted_files.append(temp_path)
+                                        metadata[temp_path.name] = file_metadata
                                         logger.info(f"COM: Extracted to {temp_filename}")
 
                                     except Exception as save_error:
@@ -450,12 +539,12 @@ def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Pat
         except:
             pass
 
-    return extracted_files
+    return extracted_files, metadata
 
 
-def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
+def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> Tuple[List[Path], Dict[str, Dict]]:
     """
-    Convenience function to extract all embedded PowerPoint files
+    Convenience function to extract all embedded PowerPoint files with metadata
     Uses multiple methods in order of reliability:
     1. ZIP extraction (fast, standard PPTX)
     2. COM extraction (works for corrupted/non-standard files)
@@ -466,19 +555,21 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
         output_dir: Directory to save extracted files
 
     Returns:
-        List of paths to extracted PowerPoint files
+        Tuple of (list of paths to extracted PowerPoint files, metadata dictionary)
     """
     pptx_path = Path(pptx_path)
     all_extracted = []
+    all_metadata = {}
 
     # Method 1: Try ZIP extraction first (fastest for standard PPTX)
     logger.info(f"Extraction Method 1: ZIP-based extraction")
     try:
-        zip_files = extract_embedded_pptx_from_zip(pptx_path, output_dir)
+        zip_files, zip_metadata = extract_embedded_pptx_from_zip(pptx_path, output_dir)
         if zip_files:
             logger.info(f"✓ ZIP method: Successfully extracted {len(zip_files)} files")
             all_extracted.extend(zip_files)
-            return all_extracted
+            all_metadata.update(zip_metadata)
+            return all_extracted, all_metadata
         else:
             logger.info("✗ ZIP method: No embedded files found")
     except zipfile.BadZipFile:
@@ -489,11 +580,12 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
     # Method 2: Try COM extraction (works for corrupted files)
     logger.info(f"Extraction Method 2: COM automation extraction")
     try:
-        com_files = extract_embedded_pptx_via_com(pptx_path, output_dir)
+        com_files, com_metadata = extract_embedded_pptx_via_com(pptx_path, output_dir)
         if com_files:
             logger.info(f"✓ COM method: Successfully extracted {len(com_files)} files")
             all_extracted.extend(com_files)
-            return all_extracted
+            all_metadata.update(com_metadata)
+            return all_extracted, all_metadata
         else:
             logger.info("✗ COM method: No embedded files found")
     except Exception as e:
@@ -510,6 +602,14 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
         if ole_files:
             logger.info(f"✓ OLE method: Successfully extracted {len(ole_files)} files")
             all_extracted.extend(ole_files)
+            # OLE method metadata from ole_objects
+            for ole_obj in ole_objects:
+                filename = ole_obj.get('filename')
+                if filename:
+                    all_metadata[filename] = {
+                        'slide_number': ole_obj.get('slide_idx'),
+                        'shape_index': ole_obj.get('shape_idx')
+                    }
         else:
             logger.info("✗ OLE method: No embedded files found")
     except Exception as e:
@@ -518,4 +618,4 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
     if not all_extracted:
         logger.warning(f"⚠ All extraction methods failed for {pptx_path.name}")
 
-    return all_extracted
+    return all_extracted, all_metadata
