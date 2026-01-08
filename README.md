@@ -90,27 +90,88 @@ TEMP_DIR=temp
 
 ## 사용 방법
 
-### 기본 사용법
+프로젝트는 3가지 방식으로 실행할 수 있습니다:
 
-1. 분석할 PowerPoint 파일을 `data/` 디렉토리에 배치
+### 방법 1: 독립 실행 (권장 - 대용량 데이터셋)
 
-2. 메인 스크립트 실행
+데이터가 1만개 이상일 경우 **강력 권장**하는 방식입니다.
+
+**Step 1: 이미지 변환**
 ```bash
+python step1_convert.py
+```
+- 모든 PowerPoint 파일을 재귀적으로 처리
+- 슬라이드를 이미지로 변환
+- `output/step1_metadata.json`에 메타데이터 저장
+- Step 1만 실행하고 중단 가능 (이미지 변환 결과 보존)
+
+**Step 2: VLM 분석 (Step 1 완료 후)**
+```bash
+# 기본 설정 (5 workers)
+python step2_analyze.py
+
+# 병렬 처리 worker 수 조정
+python step2_analyze.py --workers 10
+```
+- Step 1의 메타데이터를 로드
+- 변환된 모든 이미지를 병렬로 분석
+- Step 2만 재실행 가능 (이미지 재변환 불필요)
+
+**장점:**
+- ✅ 각 단계를 독립적으로 실행 및 재실행 가능
+- ✅ Step 1 실패 시 Step 2 재실행 불필요
+- ✅ Step 2 실패 시 이미지 재변환 불필요
+- ✅ 대용량 데이터셋에서 중간에 중단 후 재개 가능
+- ✅ VLM worker 수를 다르게 테스트 가능
+
+### 방법 2: 통합 실행 (소규모 데이터셋)
+
+작은 데이터셋이나 테스트용으로 적합합니다.
+
+```bash
+# 기본 실행 (양쪽 단계 모두 실행)
 python main.py
+
+# VLM worker 수 조정
+python main.py --workers 10
+
+# Step 1만 실행
+python main.py --skip-step2
+
+# Step 2만 실행
+python main.py --skip-step1
 ```
 
-3. 결과 확인
-- `output/` 디렉토리에 각 파일별 JSON 결과 생성
-- `output/processing_summary.json` 전체 처리 요약 확인
-- `temp/` 디렉토리에 변환된 이미지 저장 (선택적 삭제 가능)
-
-### 실행 예시
+### 방법 3: 단계별 선택 실행
 
 ```bash
-python main.py
+# Step 1만 실행 후 나중에 Step 2 실행
+python step1_convert.py
+# ... 나중에 ...
+python step2_analyze.py --workers 15
+
+# main.py로 Step 1만 실행
+python main.py --skip-step2
+# ... 나중에 ...
+python main.py --skip-step1 --workers 10
 ```
 
-출력 예시:
+### 결과 확인
+
+모든 방식에서 동일한 출력이 생성됩니다:
+- `output/{filename}_d{depth}_analysis.json` - 각 파일별 분석 결과
+- `output/processing_summary.json` - 전체 처리 요약
+- `output/step1_metadata.json` - Step 1 메타데이터 (중간 상태)
+- `temp/` - 변환된 이미지 파일들 (선택적 삭제 가능)
+
+### 실행 예시 (독립 실행)
+
+**Step 1 실행:**
+```bash
+python step1_convert.py
+```
+
+**Step 1 출력 예시:**
 ```
 ================================================================================
 VLM Recursive OCR Processor - 2-Step Architecture
@@ -171,6 +232,7 @@ VLM_Recursive_OCR_260108/
 │   ├── embed_file.pptx
 │   └── sample data.pptx
 ├── output/                        # JSON 출력 결과 디렉토리
+│   ├── step1_metadata.json        # Step 1 메타데이터 (중간 상태)
 │   ├── {filename}_d0_analysis.json
 │   ├── {filename}_d1_analysis.json
 │   └── processing_summary.json
@@ -185,7 +247,9 @@ VLM_Recursive_OCR_260108/
 ├── pptx_extractor.py             # OLE 개체 추출
 ├── image_converter.py            # 슬라이드 → 이미지 변환
 ├── vlm_analyzer.py               # GPT-4o Vision 분석 (병렬 처리)
-├── main.py                        # 메인 실행 스크립트 (2-step)
+├── step1_convert.py              # Step 1: 이미지 변환 (독립 실행)
+├── step2_analyze.py              # Step 2: VLM 분석 (독립 실행)
+├── main.py                        # 통합 실행 스크립트 (선택적)
 └── README.md                      # 프로젝트 문서
 ```
 
@@ -287,13 +351,25 @@ VLM_Recursive_OCR_260108/
 - Base64 인코딩 및 API 호출 관리
 - JSON 응답 파싱 및 에러 처리
 
-### main.py (2-Step Architecture)
-- `TwoStepPPTXProcessor` 클래스: 전체 프로세스 오케스트레이션
-- **Step 1**: 재귀적 파일 처리 및 이미지 변환
-- **Step 2**: 병렬 VLM 분석
-- **Step 3**: JSON 결과 생성 및 저장
-- 파일 계층 구조 관리
-- 이미지 레지스트리 관리
+### step1_convert.py (독립 실행 - 이미지 변환)
+- `Step1Converter` 클래스: PowerPoint → 이미지 변환 전용
+- 재귀적 파일 처리 및 OLE 추출
+- 메타데이터를 JSON으로 저장
+- 독립적으로 실행 및 재실행 가능
+- 대용량 데이터셋에 최적화
+
+### step2_analyze.py (독립 실행 - VLM 분석)
+- `Step2Analyzer` 클래스: VLM 분석 전용
+- Step 1 메타데이터 로드
+- 병렬 이미지 분석
+- 명령행 옵션으로 worker 수 조정
+- 이미지 재변환 없이 재실행 가능
+
+### main.py (통합 실행 - 선택적)
+- 두 단계를 순차적으로 실행
+- 명령행 옵션으로 각 단계 선택 가능
+- `--skip-step1`, `--skip-step2`, `--workers` 옵션 지원
+- 소규모 데이터셋이나 테스트용으로 적합
 
 ## 성능 최적화
 
@@ -314,9 +390,26 @@ VLM_Recursive_OCR_260108/
 ## 설정 커스터마이징
 
 ### VLM Workers 수 조정
-```python
-# main.py에서
-processor = TwoStepPPTXProcessor(max_vlm_workers=10)  # 기본값: 5
+```bash
+# step2_analyze.py로 조정 (권장)
+python step2_analyze.py --workers 10  # 기본값: 5
+
+# 또는 main.py로 조정
+python main.py --workers 10
+```
+
+### 대용량 데이터셋 처리 팁 (1만개 이상)
+```bash
+# 1. Step 1만 먼저 실행 (변환)
+python step1_convert.py
+
+# 2. 변환이 완료되면 다양한 worker 설정으로 테스트
+python step2_analyze.py --workers 5   # 보수적
+python step2_analyze.py --workers 10  # 권장
+python step2_analyze.py --workers 20  # 공격적 (API rate limit 주의)
+
+# 3. Step 2 실패 시 이미지 재변환 없이 재실행 가능
+python step2_analyze.py --workers 5  # 다시 실행
 ```
 
 ### 이미지 해상도 조정
@@ -345,8 +438,12 @@ convert_pptx_to_images(
 2. **PowerPoint 필수**: Microsoft PowerPoint가 설치되어 있어야 합니다
 3. **API 비용**: OpenAI GPT-4o Vision API 사용에 따른 비용이 발생합니다
    - 병렬 처리로 인해 빠르게 많은 요청이 발생할 수 있습니다
+   - 대용량 데이터셋에서는 Step 1을 먼저 완료하고 API 비용을 확인 후 Step 2 실행 권장
 4. **처리 시간**: 슬라이드가 많거나 embedded 파일이 많을 경우 처리 시간이 길어질 수 있습니다
+   - 1만개 슬라이드 기준: Step 1 ~3-5시간, Step 2 ~2-4시간 (worker 10개 기준)
 5. **디스크 공간**: 모든 슬라이드가 이미지로 변환되므로 충분한 디스크 공간 필요
+   - 슬라이드당 약 0.5-2MB (1920x1080 PNG 기준)
+   - 1만개 슬라이드 = 약 5-20GB
 
 ## 문제 해결
 
@@ -375,6 +472,29 @@ ValueError: OPENAI_API_KEY not found
 - VLM worker 수를 줄이세요
 - 이미지 해상도를 낮추세요
 - 처리 후 temp 파일을 자동 삭제하도록 설정하세요
+
+### Step 1 메타데이터 파일이 없습니다
+```
+FileNotFoundError: Metadata file not found: output/step1_metadata.json
+Please run 'python step1_convert.py' first.
+```
+→ Step 2를 실행하기 전에 Step 1을 먼저 실행하세요
+
+### 중간에 프로세스가 중단되었습니다
+- **Step 1 중단**: 다시 실행하면 이미 처리된 파일은 건너뜁니다 (파일 키 기반)
+- **Step 2 중단**: Step 1 메타데이터가 있으면 언제든 재실행 가능
+
+### 대용량 데이터셋 권장 워크플로우
+```bash
+# 1. 소량 샘플로 테스트
+python step1_convert.py  # 샘플 데이터로 테스트
+python step2_analyze.py --workers 3  # 3개 worker로 테스트
+
+# 2. 전체 데이터셋 처리
+python step1_convert.py  # 모든 이미지 변환 (3-5시간)
+# 변환 완료 확인 후
+python step2_analyze.py --workers 10  # VLM 분석 (2-4시간)
+```
 
 ## 개발자 정보
 
