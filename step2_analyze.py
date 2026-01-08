@@ -185,37 +185,108 @@ class Step2Analyzer:
 
         return all_results
 
+    def _build_hierarchical_result(
+        self,
+        file_key: str,
+        all_results: Dict[str, List[Dict]]
+    ) -> Dict:
+        """
+        Build hierarchical result for a file including all embedded files
+
+        Args:
+            file_key: Key of the file to build result for
+            all_results: Dictionary mapping file_key to analysis results
+
+        Returns:
+            Hierarchical dictionary with file and all embedded files
+        """
+        file_info = self.file_hierarchy.get(file_key, {})
+        slide_results = all_results.get(file_key, [])
+
+        result = {
+            "file_info": {
+                "filename": file_info.get("filename", file_key),
+                "depth": file_info.get("depth", 0),
+                "total_slides": len(slide_results),
+                "file_path": file_info.get("file_path", ""),
+                "has_error": "error" in file_info,
+                "error": file_info.get("error"),
+                "skipped": file_info.get("skipped", False),
+                "processed_at": datetime.now().isoformat()
+            },
+            "slides": slide_results
+        }
+
+        # Find embedded files (children of this file)
+        embedded_results = []
+        for child_key, child_info in self.file_hierarchy.items():
+            # Check if this is a child of the current file
+            if child_info.get("parent_file") == file_info.get("filename"):
+                # Recursively build result for embedded file
+                embedded_result = self._build_hierarchical_result(child_key, all_results)
+                embedded_results.append(embedded_result)
+
+        if embedded_results:
+            result["embedded_files"] = embedded_results
+            result["file_info"]["embedded_count"] = len(embedded_results)
+        else:
+            result["file_info"]["embedded_count"] = 0
+
+        return result
+
     def _generate_output_files(self, all_results: Dict[str, List[Dict]]) -> None:
         """
-        Generate individual JSON output files for each PowerPoint file
+        Generate unified JSON files for root PowerPoint files
+        Each JSON includes the main file and all embedded files hierarchically
 
         Args:
             all_results: Dictionary mapping file_key to analysis results
         """
-        for file_key, slide_results in tqdm(all_results.items(), desc="Generating JSON files"):
-            file_info = self.file_hierarchy.get(file_key, {})
+        # Find root files (depth=0)
+        root_files = [
+            (file_key, file_info)
+            for file_key, file_info in self.file_hierarchy.items()
+            if file_info.get("depth", 0) == 0
+        ]
 
-            output_data = {
-                "file_info": {
-                    "filename": file_info.get("filename", file_key),
-                    "parent_file": file_info.get("parent_file"),
-                    "depth": file_info.get("depth", 0),
-                    "total_slides": len(slide_results),
-                    "has_embedded_files": len(file_info.get("embedded_files", [])) > 0,
-                    "embedded_files": file_info.get("embedded_files", []),
-                    "processed_at": datetime.now().isoformat()
-                },
-                "slides": slide_results
+        logger.info(f"Generating {len(root_files)} unified JSON files (one per root file)")
+
+        for file_key, file_info in tqdm(root_files, desc="Generating JSON files"):
+            # Build hierarchical result including all embedded files
+            output_data = self._build_hierarchical_result(file_key, all_results)
+
+            # Count total slides including embedded files
+            total_slides = self._count_total_slides(output_data)
+            output_data["summary"] = {
+                "root_filename": file_info.get("filename", file_key),
+                "total_slides_including_embedded": total_slides,
+                "total_embedded_files": self._count_embedded_files(output_data),
+                "generated_at": datetime.now().isoformat()
             }
 
-            # Save to individual JSON file
-            output_filename = f"{file_key}_analysis.json"
+            # Save to individual JSON file (using original filename)
+            base_filename = Path(file_info.get("filename", file_key)).stem
+            output_filename = f"{base_filename}_complete_analysis.json"
             output_path = self.output_dir / output_filename
 
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-            logger.debug(f"Saved: {output_filename}")
+            logger.info(f"Saved: {output_filename} ({total_slides} total slides)")
+
+    def _count_total_slides(self, result: Dict) -> int:
+        """Count total slides including embedded files"""
+        total = len(result.get("slides", []))
+        for embedded in result.get("embedded_files", []):
+            total += self._count_total_slides(embedded)
+        return total
+
+    def _count_embedded_files(self, result: Dict) -> int:
+        """Count total number of embedded files recursively"""
+        total = len(result.get("embedded_files", []))
+        for embedded in result.get("embedded_files", []):
+            total += self._count_embedded_files(embedded)
+        return total
 
 
 def main():
