@@ -126,6 +126,27 @@ class Step1Converter:
         logger.info(f"{indent}[Depth {depth}] Processing: {pptx_path.name}")
 
         try:
+            # Validate file before conversion
+            logger.info(f"{indent}Validating PowerPoint file...")
+            from image_converter import SlideImageConverter
+
+            file_valid = False
+            with SlideImageConverter() as validator:
+                file_valid = validator.validate_pptx_file(pptx_path)
+
+            if not file_valid:
+                logger.error(f"{indent}File validation failed: {pptx_path.name}")
+                logger.error(f"{indent}This file may be corrupted or in an unsupported format")
+                logger.warning(f"{indent}Skipping this file and continuing with others...")
+                self.file_hierarchy[file_key] = {
+                    "filename": pptx_path.name,
+                    "parent_file": parent_file,
+                    "depth": depth,
+                    "error": "File validation failed - corrupted or unsupported format",
+                    "skipped": True
+                }
+                return
+
             # Convert slides to images
             slide_images_dir = self.temp_dir / f"{file_key}_slides"
             logger.info(f"{indent}Converting slides to images...")

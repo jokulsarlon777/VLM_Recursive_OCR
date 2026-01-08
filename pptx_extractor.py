@@ -240,6 +240,13 @@ def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Pa
                     with open(output_path, 'wb') as f:
                         f.write(file_data)
 
+                    # Validate the extracted file
+                    if not _validate_extracted_file(output_path):
+                        logger.warning(f"Extracted file validation failed: {output_filename}")
+                        logger.warning(f"File may be corrupted or in OLE stream format - will be skipped during conversion")
+                        # Keep the file but don't add to extracted_files list so it won't be processed
+                        continue
+
                     extracted_files.append(output_path)
                     logger.info(f"Extracted embedded file: {output_filename}")
 
@@ -252,6 +259,58 @@ def extract_embedded_pptx_from_zip(pptx_path: Path, output_dir: Path) -> List[Pa
         logger.error(f"Error reading PPTX as ZIP: {e}")
 
     return extracted_files
+
+
+def _validate_extracted_file(file_path: Path) -> bool:
+    """
+    Validate if an extracted PowerPoint file is valid
+
+    Args:
+        file_path: Path to the extracted file
+
+    Returns:
+        True if file appears valid, False otherwise
+    """
+    try:
+        # Basic file size check
+        file_size = file_path.stat().st_size
+        if file_size < 512:  # Too small to be a valid PowerPoint file
+            logger.debug(f"File too small: {file_size} bytes")
+            return False
+
+        # Read file header to validate
+        with open(file_path, 'rb') as f:
+            header = f.read(512)
+
+        # Check for valid PPTX (ZIP) signature
+        if header[:4] == b'PK\x03\x04':
+            # Check if it has proper ZIP structure
+            try:
+                with zipfile.ZipFile(file_path, 'r') as zf:
+                    namelist = zf.namelist()
+                    # Valid PPTX should have [Content_Types].xml
+                    if '[Content_Types].xml' in namelist:
+                        return True
+                    else:
+                        logger.debug("Missing [Content_Types].xml in PPTX")
+                        return False
+            except zipfile.BadZipFile:
+                logger.debug("Invalid ZIP structure")
+                return False
+
+        # Check for valid PPT (OLE2) signature
+        elif header[:8] == b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1':
+            # This is an OLE2 file, should be valid
+            # Additional validation could be done here
+            return True
+
+        else:
+            logger.debug(f"Unknown file signature: {header[:8].hex()}")
+            return False
+
+    except Exception as e:
+        logger.debug(f"Validation error: {e}")
+        return False
 
 
 def _detect_file_extension(file_data: bytes) -> str:

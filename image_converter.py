@@ -61,6 +61,29 @@ class SlideImageConverter:
         except Exception as e:
             logger.error(f"Error during PowerPoint cleanup: {e}")
 
+    def validate_pptx_file(self, pptx_path: Path) -> bool:
+        """
+        Validate if a PowerPoint file can be opened
+
+        Args:
+            pptx_path: Path to PowerPoint file
+
+        Returns:
+            True if file can be opened, False otherwise
+        """
+        try:
+            presentation = self.powerpoint.Presentations.Open(
+                str(pptx_path),
+                ReadOnly=True,
+                Untitled=True,
+                WithWindow=False
+            )
+            presentation.Close()
+            return True
+        except Exception as e:
+            logger.warning(f"File validation failed for {pptx_path.name}: {e}")
+            return False
+
     def convert_slides_to_images(
         self,
         pptx_path: Path,
