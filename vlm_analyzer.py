@@ -8,10 +8,10 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
+from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm import tqdm
-from config import OPENAI_API_KEY, GPT_MODEL, SYSTEM_PROMPT, JSON_SCHEMA
+from config import AZURE_ENDPOINT, AZURE_API_KEY, AZURE_API_VERSION, GPT_MODEL, SYSTEM_PROMPT, JSON_SCHEMA
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,14 +31,18 @@ class VLMAnalyzer:
         Initialize the VLM analyzer
 
         Args:
-            api_key: OpenAI API key (defaults to config.OPENAI_API_KEY)
+            api_key: Azure OpenAI API key (defaults to config.AZURE_API_KEY)
             model: Model name (defaults to config.GPT_MODEL)
             max_workers: Maximum number of parallel workers for analysis
             max_retries: Maximum number of retry attempts for failed requests
         """
-        self.api_key = api_key or OPENAI_API_KEY
+        self.api_key = api_key or AZURE_API_KEY
         self.model = model or GPT_MODEL
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = AzureOpenAI(
+            azure_endpoint=AZURE_ENDPOINT,
+            api_key=self.api_key,
+            api_version=AZURE_API_VERSION
+        )
         self.max_workers = max_workers
         self.max_retries = max_retries
 

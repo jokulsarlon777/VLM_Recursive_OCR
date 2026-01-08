@@ -133,6 +133,7 @@ class Step1Converter:
             slide_images = convert_pptx_to_images(
                 pptx_path,
                 slide_images_dir,
+                image_format="PNG",
                 show_progress=True
             )
 

@@ -18,15 +18,17 @@ TEMP_DIR = PROJECT_ROOT / os.getenv("TEMP_DIR", "temp")
 OUTPUT_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
 
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o")
+# Azure OpenAI Configuration
+AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT", "https://h-chat-api.autoever.com/v2/api")
+AZURE_API_KEY = os.getenv("AZURE_API_KEY")
+AZURE_API_VERSION = os.getenv("AZURE_API_VERSION", "2024-10-21")
+GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o-mini")
 
 # Validate API key
-if not OPENAI_API_KEY:
+if not AZURE_API_KEY:
     raise ValueError(
-        "OPENAI_API_KEY not found in environment variables. "
-        "Please create a .env file based on .env.example"
+        "AZURE_API_KEY not found in environment variables. "
+        "Please create a .env file with AZURE_API_KEY"
     )
 
 # JSON Schema for output
