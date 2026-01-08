@@ -35,7 +35,14 @@ class SlideImageConverter:
         try:
             pythoncom.CoInitialize()
             self.powerpoint = win32com.client.Dispatch("PowerPoint.Application")
-            self.powerpoint.Visible = False
+
+            # Try to hide PowerPoint window, but continue if not allowed
+            try:
+                self.powerpoint.Visible = False
+            except Exception as visible_error:
+                logger.warning(f"Could not hide PowerPoint window: {visible_error}")
+                logger.info("PowerPoint will run with visible window")
+
             logger.info("PowerPoint application initialized")
         except Exception as e:
             logger.error(f"Failed to initialize PowerPoint: {e}")
