@@ -1,13 +1,19 @@
 """
 PowerPoint OLE Object Extractor
 Extracts embedded OLE objects (ppt/pptx) from PowerPoint files recursively
+
+Supports multiple extraction methods:
+1. ZIP-based extraction (fastest, works for standard PPTX)
+2. COM automation extraction (works for corrupted/non-standard PPTX)
+3. python-pptx OLE extraction (fallback)
 """
 import os
+import sys
 import tempfile
 import zipfile
 import shutil
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from pptx import Presentation
 from pptx.shapes.graphfrm import GraphicFrame
 from pptx.oxml import parse_xml
@@ -15,6 +21,18 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import COM only on Windows
+if sys.platform == 'win32':
+    try:
+        import win32com.client
+        import pythoncom
+        COM_AVAILABLE = True
+    except ImportError:
+        COM_AVAILABLE = False
+        logger.warning("win32com not available, COM extraction will be disabled")
+else:
+    COM_AVAILABLE = False
 
 
 class PPTXExtractor:
@@ -269,10 +287,10 @@ def _detect_file_extension(file_data: bytes) -> str:
     return '.bin'
 
 
-def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
+def extract_embedded_pptx_via_com(pptx_path: Path, output_dir: Path) -> List[Path]:
     """
-    Convenience function to extract all embedded PowerPoint files
-    Uses both ZIP extraction and OLE object parsing
+    Extract embedded PowerPoint files using COM automation
+    Works even for corrupted/non-standard PPTX files that PowerPoint can open
 
     Args:
         pptx_path: Path to the source PowerPoint file
@@ -281,16 +299,164 @@ def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
     Returns:
         List of paths to extracted PowerPoint files
     """
-    # Try ZIP extraction first (more reliable for embedded files)
-    extracted_files = extract_embedded_pptx_from_zip(pptx_path, output_dir)
+    if not COM_AVAILABLE:
+        logger.debug("COM not available, skipping COM extraction")
+        return []
 
-    if extracted_files:
-        logger.info(f"Successfully extracted {len(extracted_files)} embedded PowerPoint files using ZIP method")
-        return extracted_files
+    pptx_path = Path(pptx_path).resolve()
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fallback to OLE object extraction
-    logger.info("No files found with ZIP method, trying OLE extraction...")
-    extractor = PPTXExtractor(pptx_path)
-    extractor.load_presentation()
-    ole_objects = extractor.extract_ole_objects()
-    return extractor.save_ole_objects(ole_objects, output_dir)
+    extracted_files = []
+
+    try:
+        pythoncom.CoInitialize()
+        powerpoint = win32com.client.Dispatch("PowerPoint.Application")
+
+        try:
+            # Hide window if possible
+            powerpoint.Visible = False
+        except:
+            pass
+
+        try:
+            # Open presentation
+            presentation = powerpoint.Presentations.Open(
+                str(pptx_path),
+                ReadOnly=True,
+                Untitled=True,
+                WithWindow=False
+            )
+
+            logger.info(f"COM: Opened presentation with {presentation.Slides.Count} slides")
+
+            # Iterate through all shapes in all slides
+            for slide_idx in range(1, presentation.Slides.Count + 1):
+                slide = presentation.Slides(slide_idx)
+
+                for shape_idx in range(1, slide.Shapes.Count + 1):
+                    try:
+                        shape = slide.Shapes(shape_idx)
+
+                        # Check if shape has OLEFormat (embedded object)
+                        if hasattr(shape, 'OLEFormat'):
+                            try:
+                                ole_format = shape.OLEFormat
+                                prog_id = ole_format.ProgID
+
+                                # Check if it's a PowerPoint object
+                                if 'PowerPoint' in prog_id or 'Presentation' in prog_id:
+                                    logger.info(f"COM: Found embedded PowerPoint in slide {slide_idx}, shape {shape_idx}")
+
+                                    # Create temporary file to save the object
+                                    temp_filename = f"embedded_s{slide_idx}_sh{shape_idx}.pptx"
+                                    temp_path = output_dir / temp_filename
+
+                                    # Try to activate and save the embedded object
+                                    try:
+                                        ole_format.DoVerb(1)  # Open for editing
+                                        # Save the active presentation (the embedded one)
+                                        embedded_pres = powerpoint.ActivePresentation
+                                        embedded_pres.SaveAs(str(temp_path))
+                                        embedded_pres.Close()
+
+                                        extracted_files.append(temp_path)
+                                        logger.info(f"COM: Extracted to {temp_filename}")
+
+                                    except Exception as save_error:
+                                        logger.debug(f"COM: Could not extract via DoVerb: {save_error}")
+
+                            except Exception as ole_error:
+                                # Shape doesn't have valid OLEFormat, skip
+                                pass
+
+                    except Exception as shape_error:
+                        # Error accessing shape, skip
+                        pass
+
+            # Close presentation
+            presentation.Close()
+
+        finally:
+            # Clean up PowerPoint
+            powerpoint.Quit()
+            pythoncom.CoUninitialize()
+
+        logger.info(f"COM: Extracted {len(extracted_files)} embedded files")
+
+    except Exception as e:
+        logger.error(f"COM extraction failed: {e}")
+        try:
+            pythoncom.CoUninitialize()
+        except:
+            pass
+
+    return extracted_files
+
+
+def extract_embedded_pptx(pptx_path: Path, output_dir: Path) -> List[Path]:
+    """
+    Convenience function to extract all embedded PowerPoint files
+    Uses multiple methods in order of reliability:
+    1. ZIP extraction (fast, standard PPTX)
+    2. COM extraction (works for corrupted/non-standard files)
+    3. python-pptx OLE extraction (fallback)
+
+    Args:
+        pptx_path: Path to the source PowerPoint file
+        output_dir: Directory to save extracted files
+
+    Returns:
+        List of paths to extracted PowerPoint files
+    """
+    pptx_path = Path(pptx_path)
+    all_extracted = []
+
+    # Method 1: Try ZIP extraction first (fastest for standard PPTX)
+    logger.info(f"Extraction Method 1: ZIP-based extraction")
+    try:
+        zip_files = extract_embedded_pptx_from_zip(pptx_path, output_dir)
+        if zip_files:
+            logger.info(f"✓ ZIP method: Successfully extracted {len(zip_files)} files")
+            all_extracted.extend(zip_files)
+            return all_extracted
+        else:
+            logger.info("✗ ZIP method: No embedded files found")
+    except zipfile.BadZipFile:
+        logger.warning("✗ ZIP method: File is not a valid ZIP (corrupted or non-standard PPTX)")
+    except Exception as e:
+        logger.warning(f"✗ ZIP method failed: {e}")
+
+    # Method 2: Try COM extraction (works for corrupted files)
+    logger.info(f"Extraction Method 2: COM automation extraction")
+    try:
+        com_files = extract_embedded_pptx_via_com(pptx_path, output_dir)
+        if com_files:
+            logger.info(f"✓ COM method: Successfully extracted {len(com_files)} files")
+            all_extracted.extend(com_files)
+            return all_extracted
+        else:
+            logger.info("✗ COM method: No embedded files found")
+    except Exception as e:
+        logger.warning(f"✗ COM method failed: {e}")
+
+    # Method 3: Fallback to python-pptx OLE extraction
+    logger.info(f"Extraction Method 3: python-pptx OLE extraction")
+    try:
+        extractor = PPTXExtractor(pptx_path)
+        extractor.load_presentation()
+        ole_objects = extractor.extract_ole_objects()
+        ole_files = extractor.save_ole_objects(ole_objects, output_dir)
+
+        if ole_files:
+            logger.info(f"✓ OLE method: Successfully extracted {len(ole_files)} files")
+            all_extracted.extend(ole_files)
+        else:
+            logger.info("✗ OLE method: No embedded files found")
+    except Exception as e:
+        logger.warning(f"✗ OLE method failed: {e}")
+
+    if not all_extracted:
+        logger.warning(f"⚠ All extraction methods failed for {pptx_path.name}")
+
+    return all_extracted
